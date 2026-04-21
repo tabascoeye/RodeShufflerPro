@@ -9,6 +9,13 @@
     6: "Action"
   };
 
+  const PAD_TYPE_ICONS = {
+    1: './res/sound.svg',
+    2: './res/fx.svg',
+    3: './res/mixer.svg',
+    6: './res/midi.svg'
+  };
+
   const PAD_COLOURS = {
     [-1]: { label: "Neutral", swatch: "#58626b" },
     0: { label: "Red", swatch: "#d84b49" },
@@ -405,6 +412,10 @@
 
   function padTypeLabel(type) {
     return PAD_TYPE_LABELS[type] || `Type ${type}`;
+  }
+
+  function padTypeIcon(type) {
+    return PAD_TYPE_ICONS[type] || '';
   }
 
   function buildPad(node, id) {
@@ -878,6 +889,7 @@
     exportRemappedBinary,
     formatPadFields,
     parseShowConfig,
-    resolveModel
+    resolveModel,
+    padTypeIcon
   };
 })(window);

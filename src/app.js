@@ -1,6 +1,6 @@
 (function bootstrapBrowserApp() {
   const { bytesToHex, md5Bytes } = window.RodeShufflerUtils || {};
-  const { buildLayout, exportRemappedBinary, formatPadFields, parseShowConfig } =
+  const { buildLayout, exportRemappedBinary, formatPadFields, parseShowConfig, padTypeIcon } =
     window.RodeShufflerParser || {};
 
   if (!bytesToHex || !md5Bytes || !buildLayout || !exportRemappedBinary || !formatPadFields || !parseShowConfig) {
@@ -34,7 +34,6 @@
     md5Summary: document.querySelector("#md5-summary"),
     modelOverride: document.querySelector("#model-override"),
     modelSummary: document.querySelector("#model-summary"),
-    notesList: document.querySelector("#notes-list"),
     padsSummary: document.querySelector("#pads-summary"),
     parserSummary: document.querySelector("#parser-summary"),
     resetLayout: document.querySelector("#reset-layout"),
@@ -75,28 +74,6 @@
     elements.md5Summary.textContent = state.md5Status;
   }
 
-  function renderFindings() {
-    elements.notesList.innerHTML = "";
-
-    if (!state.parsed) {
-      const item = document.createElement("li");
-      item.textContent = "Upload a show-config.bin to walk the full show tree and inspect the smart pads.";
-      elements.notesList.append(item);
-      return;
-    }
-
-    state.parsed.findings.forEach((line) => {
-      const item = document.createElement("li");
-      item.textContent = line;
-      elements.notesList.append(item);
-    });
-
-    if (state.layout?.overflowPads.length) {
-      const item = document.createElement("li");
-      item.textContent = `${state.layout.overflowPads.length} pads could not be placed into the visible slot range for the chosen model.`;
-      elements.notesList.append(item);
-    }
-  }
 
   function renderInspector() {
     elements.inspector.innerHTML = "";
@@ -201,7 +178,6 @@
       state.layout = null;
       state.slotPadIds = null;
       updateMetrics();
-      renderFindings();
       renderInspector();
       return;
     }
@@ -221,7 +197,6 @@
     refreshExportArtifacts();
     updateMetrics();
     renderLayout();
-    renderFindings();
     renderInspector();
   }
 
@@ -333,7 +308,12 @@
             renderLayout();
             renderInspector();
           });
-          card.innerHTML = `<div class="pad-name">${pad.name}</div>`;
+          card.innerHTML = `
+            <div class="pad-icon">
+              <img src="${padTypeIcon(pad.type)}" alt="${pad.typeLabel}" />
+            </div>
+            <div class="pad-name">${pad.name}</div>
+          `;
           slotElement.append(card);
         }
 
@@ -394,7 +374,6 @@
       elements.uploadNote.textContent = error instanceof Error ? error.message : String(error);
       updateMetrics();
       renderLayout();
-      renderFindings();
       renderInspector();
     }
   });
@@ -435,6 +414,5 @@
 
   updateMetrics();
   renderLayout();
-  renderFindings();
   renderInspector();
 })();
