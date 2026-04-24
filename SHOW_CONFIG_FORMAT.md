@@ -130,18 +130,32 @@ Important PAD fields:
 | `padName` | Display name |
 | `padFilePath` | Sound file path for sound pads |
 | `padColourIndex` | Color index |
-| `padEffectInput` | Effect input/source selection; observed `19` and `20` distinguish otherwise identical FX pads |
+| `padEffectInput` | FX input/source selection |
 | `padEffectTriggerMode` | Effect trigger behavior |
 
 `padIdx` and `padTriggerControl` match in all controlled samples. Device-deleted
 files keep slot gaps instead of renumbering remaining pads, so deletion must not
 renumber other PAD nodes.
 
-In `16_test_added_2_fx`, `Effect17` and `Effect18` are intentionally similar.
-Their PAD nodes differ only in `padIdx`, `padTriggerControl`, `padName`,
-`padColourIndex`, and `padEffectInput`. Their PADEFFECTS children differ only in
-`effectsIdx`. This strongly places the selected input/source on the PAD, not in
-the PADEFFECTS parameter node.
+In `16_test_added_2_fx`, `Effect17` and `Effect18` are intentionally similar
+wireless-input FX pads. Their PAD nodes differ only in `padIdx`,
+`padTriggerControl`, `padName`, `padColourIndex`, and `padEffectInput`.
+`Effect17` has `padEffectInput = 20`; `Effect18` has `padEffectInput = 19`.
+Their PADEFFECTS children differ only in `effectsIdx`. This strongly places the
+selected input/source on the PAD, not in the PADEFFECTS parameter node.
+
+On Pro II / Duo exports, `padColourIndex = 11` renders as hot pink. This differs
+from older/legacy assumptions where the same index was treated as white.
+
+Observed Pro II / Duo FX input values from the `clean` show:
+
+| `padEffectInput` | Input source |
+| ---: | --- |
+| `0` | Wired Mic 1 |
+| `1` | Wired Mic 2 |
+| `2` | Headset |
+| `19` | Wireless Mic 1 |
+| `20` | Wireless Mic 2 |
 
 Observed pad types:
 
@@ -269,7 +283,5 @@ exports the raw 16-byte form used by the device samples.
 - More baseline-slot FX adds (`1`, `3`, `11`, `16`, `17`, `18`, `19`, `21`,
   `29`, or `65`) would show whether the extra appended `effectsIdx = 8` entry is
   specific to slot `0` or a general device quirk.
-- The exact meaning of `padEffectInput` is not fully mapped. Factory effect pads
-  use `0`, while some earlier one-pad experiments used other values.
 - Pad type `6` is labeled from observed names and icons, but its full subtype
   model is still not mapped.

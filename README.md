@@ -1,48 +1,43 @@
 # Rode Shuffler Pro
 
-Small offline Web GUI for exploring and remapping RØDECaster Duo / Pro II smart
-pad layouts from `show-config.bin`.
+Offline browser app for rearranging RØDECaster Duo / Pro II Smart Pads inside a
+`show-config.bin`.
 
-## What it does today
+The app parses the show file locally, displays the pad banks, lets you move,
+duplicate, and delete pads, then exports a modified `show-config.bin` plus a
+matching raw device-style `show-config.md5`.
 
-- Uploads a `show-config.bin` and optionally validates a matching `.md5`.
-- Walks the full binary tree to find the real root parse instead of relying on a
-  hardcoded `SOUNDPADS` offset.
-- Parses the real `SOUNDPADS` container and its child `PAD` objects.
-- Reads names, type IDs, colour indices, file paths, trigger fields, and slot
-  indices directly from the binary.
-- Lays pads out in 2x3 banks for Duo and 2x4 banks for Pro II.
-- Lets you drag/drop pads between slots.
-- Exports a remapped `show-config.bin` plus a raw 16-byte `show-config.md5`.
+## Use It
 
-## Current binary findings
+Open [index.html](./index.html) in a browser. No server, upload, or network
+access is required.
 
-- `SOUNDPADS` is a container node, not a flat object.
-- The sample file starts with a short `Rodecaster` header and the first real
-  structured root begins at byte `15`.
-- Containers use `name + NUL + 0x00 0x01 + count`.
-- Empty containers can use `name + NUL + 0x00 0x00`.
-- Leaf objects such as `PAD` use `name + NUL + 0x01 + count`.
-- The full sample tree contains `469` top-level roots and `5` containers, and
-  the parser now walks cleanly through the entire file.
-- Fields can use either a 1-byte or 2-byte payload length marker.
-- On the attached Duo show, `padIdx` and `padTriggerControl` match for every pad
-  and behave like the absolute slot position across the full 48-slot layout.
+1. Load a `show-config.bin`.
+2. Drag pads to move or swap them.
+3. Hold Alt/Option before dropping to duplicate a pad.
+4. Select a pad and press Backspace/Delete to remove it.
+5. Download the edited BIN and MD5 files.
 
-## Run it
+## Current Behavior
 
-Open [index.html](./index.html) directly in your browser.
+- Auto-detects RØDECaster Duo vs Pro II from the parsed show.
+- Cleans unlinked `PADEFFECTS` entries before editing.
+- Keeps FX pads linked to their corresponding `EFFECTS_PARAMETERS` entries when
+  moving, duplicating, deleting, or overwriting pads.
+- Lets FX pads switch between wired mic, headset, and wireless mic inputs.
+- Preserves empty slots as gaps instead of renumbering the remaining pads.
 
-No server is required for normal use. The app parses files, computes MD5, and
-generates downloads entirely in the browser.
+## File Format Notes
 
-## Sources consulted
+The binary format findings live in [SHOW_CONFIG_FORMAT.md](./SHOW_CONFIG_FORMAT.md).
+Keep detailed parser discoveries there so the README can stay focused on using
+the app.
 
-- RØDECaster Duo SMART pad guide:
-  [rode.com/en-au/user-guides/rodecaster-duo/using-the-smart-pads](https://rode.com/en-au/user-guides/rodecaster-duo/using-the-smart-pads)
-- RØDECaster Pro II SMART pad guide:
-  [rode.com/cn-cn/user-guides/rodecaster-pro-ii/using-the-smart-pads](https://rode.com/cn-cn/user-guides/rodecaster-pro-ii/using-the-smart-pads)
-- RØDE help article on show export/import:
-  [help.rode.com/.../Exporting-and-Importing-Shows-with-R%C3%98DECaster-Pro-II-Duo-Using-MicroSD-Card-and-USB-Drives](https://help.rode.com/hc/en-us/articles/7985588962191-Exporting-and-Importing-Shows-with-R%C3%98DECaster-Pro-II-Duo-Using-MicroSD-Card-and-USB-Drives)
-- RØDECaster Pro II / Duo release notes:
-  [update.rode.com/notes/rcp2/](https://update.rode.com/notes/rcp2/)
+## Project Shape
+
+- [index.html](./index.html) is the static app shell.
+- [src/app.js](./src/app.js) owns UI state and interactions.
+- [src/rodecaster.js](./src/rodecaster.js) parses and mutates the show binary.
+- [src/md5.js](./src/md5.js) generates the companion checksum file.
+- [example shows/](./example%20shows/) contains device exports used for format
+  research and regression checks.
