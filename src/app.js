@@ -1,9 +1,9 @@
 (function bootstrapBrowserApp() {
   const { bytesToHex, md5Bytes } = window.RodeShufflerUtils || {};
-  const { buildLayout, exportRemappedBinary, formatPadFields, parseShowConfig, padTypeIcon } =
+  const { buildLayout, cleanOrphanPadEffects, exportRemappedBinary, formatPadFields, parseShowConfig, padTypeIcon } =
     window.RodeShufflerParser || {};
 
-  if (!bytesToHex || !md5Bytes || !buildLayout || !exportRemappedBinary || !formatPadFields || !parseShowConfig) {
+  if (!bytesToHex || !md5Bytes || !buildLayout || !cleanOrphanPadEffects || !exportRemappedBinary || !formatPadFields || !parseShowConfig) {
     throw new Error("Rode Shuffler dependencies did not load correctly.");
   }
 
@@ -13,10 +13,13 @@
     draggedPadId: null,
     exportedBin: null,
     exportedMd5: null,
+    isDuplicating: false,
+    altKeyPressed: false,
     layout: null,
     md5Digest: null,
     md5Status: "Not checked",
     modelOverride: "auto",
+    originalParsed: null,
     parsed: null,
     selectedPadId: null,
     slotPadIds: null
@@ -89,55 +92,46 @@
       return;
     }
 
-    const currentSlot = state.layout?.slotPadIds.indexOf(pad.id) ?? -1;
-    const currentBank =
-      currentSlot >= 0 && state.layout
-        ? `Bank ${Math.floor(currentSlot / state.layout.model.padsPerBank) + 1}, Slot ${(currentSlot % state.layout.model.padsPerBank) + 1}`
-        : "Not placed";
-
     const important = document.createElement("div");
     important.className = "inspector-grid";
-    important.append(
-      makeKeyValue("Name", pad.name),
-      makeKeyValue("Type", `${pad.typeLabel} (padType ${pad.rawType})`),
-      makeKeyValue("Current Slot", currentBank),
-      makeKeyValue("Original Slot", `${pad.absoluteIndex}`),
-      makeKeyValue("Colour", `${pad.colour.label} (index ${pad.colourIndex})`)
-    );
 
-    if (pad.filePath) {
-      important.append(makeKeyValue("File", pad.filePath));
-    }
-
-    if (pad.playMode !== null) {
-      important.append(makeKeyValue("Play Mode", `${pad.playMode}`));
-    }
-
-    if (pad.effectInput !== null) {
-      important.append(makeKeyValue("Effect Input", `${pad.effectInput}`));
-    }
-
-    if (pad.mixerMode !== null) {
-      important.append(makeKeyValue("Mixer Mode", `${pad.mixerMode}`));
-    }
-
-    if (pad.rcvSyncPadType !== null) {
-      important.append(makeKeyValue("Action Subtype", `${pad.rcvSyncPadType}`));
-    }
-
-    elements.inspector.append(important);
-
-    const rawTitle = document.createElement("h3");
-    rawTitle.textContent = "Decoded Fields";
-    rawTitle.className = "inspector-heading";
-    elements.inspector.append(rawTitle);
-
-    formatPadFields(pad).forEach((field) => {
-      const row = document.createElement("div");
-      row.className = "field-row";
-      row.innerHTML = `<span>${field.label}</span><strong>${field.value}</strong>`;
-      elements.inspector.append(row);
+    // Editable name field
+    const nameRow = document.createElement("div");
+    nameRow.className = "inspector-row";
+    const nameLabel = document.createElement("span");
+    nameLabel.textContent = "Name";
+    const nameInput = document.createElement("input");
+    nameInput.type = "text";
+    nameInput.value = pad.name;
+    nameInput.addEventListener("input", (event) => {
+      pad.name = event.target.value;
+      renderLayout(); // Update the pad display
     });
+    nameInput.addEventListener("blur", () => {
+      // Could add save logic here if needed
+    });
+    nameRow.append(nameLabel, nameInput);
+
+    // Type field (read-only)
+    const typeRow = document.createElement("div");
+    typeRow.className = "inspector-row";
+    const typeLabel = document.createElement("span");
+    typeLabel.textContent = "Type";
+    const typeValue = document.createElement("strong");
+    typeValue.textContent = `${pad.typeLabel} (padType ${pad.rawType})`;
+    typeRow.append(typeLabel, typeValue);
+
+    // File path field (read-only, if exists)
+    const fileRow = document.createElement("div");
+    fileRow.className = "inspector-row";
+    const fileLabel = document.createElement("span");
+    fileLabel.textContent = "File";
+    const fileValue = document.createElement("strong");
+    fileValue.textContent = pad.filePath || "No file";
+    fileRow.append(fileLabel, fileValue);
+
+    important.append(nameRow, typeRow, fileRow);
+    elements.inspector.append(important);
   }
 
   function refreshExportArtifacts() {
@@ -155,14 +149,17 @@
     const exported = exportRemappedBinary(state.parsed, state.slotPadIds);
     state.exportedBin = exported.bytes.slice();
     state.exportedMd5 = md5Bytes(exported.bytes);
+
+    const originalBytes = state.originalParsed ? state.originalParsed.bytes : state.parsed.bytes;
+    const maxLen = Math.max(originalBytes.length, exported.bytes.length);
     let diffCount = 0;
-    for (let index = 0; index < state.parsed.bytes.length; index += 1) {
-      if (state.parsed.bytes[index] !== exported.bytes[index]) {
+    for (let index = 0; index < maxLen; index += 1) {
+      if (originalBytes[index] !== exported.bytes[index]) {
         diffCount += 1;
       }
     }
 
-    const originalMd5 = bytesToHex(md5Bytes(state.parsed.bytes));
+    const originalMd5 = bytesToHex(md5Bytes(originalBytes));
     const remappedMd5 = bytesToHex(state.exportedMd5);
     state.changeSummary =
       diffCount === 0
@@ -189,9 +186,6 @@
 
     state.layout = layout;
     state.slotPadIds = layout.slotPadIds.slice();
-    if (state.selectedPadId === null && state.parsed.pads.length) {
-      state.selectedPadId = state.parsed.pads[0].id;
-    }
 
     elements.resetLayout.disabled = false;
     refreshExportArtifacts();
@@ -216,6 +210,162 @@
     next[originIndex] = targetPadId === undefined ? null : targetPadId;
     state.slotPadIds = next;
     rebuildLayout(false);
+  }
+
+  function duplicatePad(draggedPadId, targetAbsoluteIndex) {
+    if (!state.parsed || !state.layout) {
+      console.error('No file loaded');
+      return;
+    }
+
+    if (!window.RodeShufflerParser || !window.RodeShufflerParser.duplicatePadBinary) {
+      console.error('Binary duplication not available');
+      return;
+    }
+
+    const sourcePad = state.layout.padById.get(draggedPadId);
+    if (!sourcePad) {
+      console.error('Source pad not found');
+      return;
+    }
+
+    // Check actual current slot position from slotPadIds, not absoluteIndex
+    const currentSlotIndex = state.slotPadIds.indexOf(draggedPadId);
+    if (currentSlotIndex === targetAbsoluteIndex) {
+      return;
+    }
+
+    const targetPadId = state.slotPadIds[targetAbsoluteIndex];
+    const overwriteTarget = targetPadId !== null && targetPadId !== undefined && targetPadId !== draggedPadId;
+
+    try {
+      const result = window.RodeShufflerParser.duplicatePadBinary(
+        state.parsed,
+        draggedPadId,
+        targetAbsoluteIndex,
+        overwriteTarget ? targetPadId : null
+      );
+
+      state.parsed = result.parsed;
+
+      const totalSlots = state.layout.model.totalSlots;
+      const nextSlotPadIds = state.slotPadIds.slice(0, totalSlots);
+
+      // If overwriting, remove the old target pad id from wherever it was
+      if (overwriteTarget) {
+        for (let i = 0; i < totalSlots; i += 1) {
+          if (nextSlotPadIds[i] === targetPadId) {
+            nextSlotPadIds[i] = null;
+          }
+        }
+      }
+
+      nextSlotPadIds[targetAbsoluteIndex] = result.newPadId;
+      state.slotPadIds = nextSlotPadIds;
+      state.selectedPadId = result.newPadId;
+
+      rebuildLayout(false);
+    } catch (error) {
+      console.error('Duplication failed:', error);
+    }
+  }
+
+  function findNextPadInVisualOrder(startAbsoluteIndex) {
+    const model = state.layout.model;
+    const padsPerBank = model.padsPerBank;
+    const rows = Math.ceil(padsPerBank / 2);
+    const totalSlots = model.totalSlots;
+
+    // Build visual order offsets within a bank (same as slotsForDisplay)
+    const bankVisualOrder = [];
+    for (let row = 0; row < rows; row += 1) {
+      bankVisualOrder.push(row);
+      bankVisualOrder.push(row + rows);
+    }
+
+    const startBank = Math.floor(startAbsoluteIndex / padsPerBank);
+    const startOffset = startAbsoluteIndex % padsPerBank;
+    const startVisualIndex = bankVisualOrder.indexOf(startOffset);
+
+    let currentBank = startBank;
+    let currentVisualIndex = startVisualIndex;
+
+    while (true) {
+      currentVisualIndex += 1;
+      if (currentVisualIndex >= bankVisualOrder.length) {
+        currentVisualIndex = 0;
+        currentBank += 1;
+        if (currentBank * padsPerBank >= totalSlots) {
+          currentBank = 0;
+        }
+      }
+
+      // Stop if we've wrapped all the way around
+      if (currentBank === startBank && currentVisualIndex === startVisualIndex) {
+        break;
+      }
+
+      const absIndex = currentBank * padsPerBank + bankVisualOrder[currentVisualIndex];
+      if (absIndex >= totalSlots) {
+        continue;
+      }
+
+      const padId = state.slotPadIds[absIndex];
+      if (padId !== null && padId !== undefined) {
+        return padId;
+      }
+    }
+
+    return null;
+  }
+
+  function deletePad(padId) {
+    if (!state.parsed || !state.layout) {
+      console.error('No file loaded');
+      return;
+    }
+
+    if (!window.RodeShufflerParser || !window.RodeShufflerParser.removePadBinary) {
+      console.error('Binary removal not available');
+      return;
+    }
+
+    try {
+      // Remember where the deleted pad was for finding the next selection
+      const deletedAtIndex = state.slotPadIds.indexOf(padId);
+
+      const newParsed = window.RodeShufflerParser.removePadBinary(state.parsed, padId);
+      state.parsed = newParsed;
+
+      const totalSlots = state.layout.model.totalSlots;
+      const nextSlotPadIds = state.slotPadIds.slice(0, totalSlots);
+
+      // Physical removal: pad is gone from binary, so IDs shift
+      // Re-parsing reassigns sequential IDs based on array position
+      for (let i = 0; i < totalSlots; i += 1) {
+        const id = nextSlotPadIds[i];
+        if (id === padId) {
+          nextSlotPadIds[i] = null;
+        } else if (id !== null && id > padId) {
+          nextSlotPadIds[i] = id - 1;
+        }
+      }
+
+      state.slotPadIds = nextSlotPadIds;
+
+      rebuildLayout(false);
+
+      // Select the next pad in visual (display) order
+      if (deletedAtIndex !== -1) {
+        state.selectedPadId = findNextPadInVisualOrder(deletedAtIndex);
+        renderLayout();
+        renderInspector();
+      } else {
+        state.selectedPadId = null;
+      }
+    } catch (error) {
+      console.error('Delete failed:', error);
+    }
   }
 
   function slotsForDisplay(bankSlots) {
@@ -276,32 +426,68 @@
         slotElement.addEventListener("dragover", (event) => {
           event.preventDefault();
           slotElement.classList.add("drag-over");
+
+          // Check if Alt key is currently pressed during dragover
+          const altPressed = state.altKeyPressed || event.altKey || event.getModifierState('Alt');
+          state.isDuplicating = altPressed;
+
+          if (altPressed) {
+            slotElement.classList.add("duplicate");
+            // Add duplicating class to the dragged pad
+            const draggedCard = document.querySelector(`[data-pad-id="${state.draggedPadId}"]`);
+            if (draggedCard) {
+              draggedCard.classList.add('duplicating');
+            }
+          } else {
+            slotElement.classList.remove("duplicate");
+            const draggedCard = document.querySelector(`[data-pad-id="${state.draggedPadId}"]`);
+            if (draggedCard) {
+              draggedCard.classList.remove('duplicating');
+            }
+          }
         });
         slotElement.addEventListener("dragleave", () => {
-          slotElement.classList.remove("drag-over");
+          slotElement.classList.remove("drag-over", "duplicate");
         });
         slotElement.addEventListener("drop", (event) => {
           event.preventDefault();
-          slotElement.classList.remove("drag-over");
+          slotElement.classList.remove("drag-over", "duplicate");
 
           if (state.draggedPadId === null) {
             return;
           }
 
-          movePad(state.draggedPadId, slot.absoluteIndex);
+          if (state.isDuplicating) {
+            duplicatePad(state.draggedPadId, slot.absoluteIndex);
+          } else {
+            movePad(state.draggedPadId, slot.absoluteIndex);
+          }
+
           state.draggedPadId = null;
+          state.isDuplicating = false;
         });
 
         if (slot.padId === null) {
           slotElement.innerHTML = `<span class="slot-empty">Empty</span>`;
         } else {
           const pad = state.layout.padById.get(slot.padId);
+          if (!pad) {
+            console.error('Pad not found for slot.padId:', slot.padId);
+            slotElement.innerHTML = `<span class="slot-empty">Missing Pad</span>`;
+            return;
+          }
           const card = document.createElement("article");
           card.className = `pad-card${state.selectedPadId === pad.id ? " selected" : ""}`;
           card.draggable = true;
+          card.dataset.padId = pad.id; // Add data attribute for easy identification
           card.style.setProperty("--pad-colour", pad.colour.swatch);
-          card.addEventListener("dragstart", () => {
+          card.addEventListener("dragstart", (event) => {
             state.draggedPadId = pad.id;
+          });
+          card.addEventListener("dragend", () => {
+            card.classList.remove('duplicating');
+            state.draggedPadId = null;
+            state.isDuplicating = false;
           });
           card.addEventListener("click", () => {
             state.selectedPadId = pad.id;
@@ -353,13 +539,24 @@
       state.currentFileBaseName = file.name.replace(/\.[^.]+$/, "") || "show-config";
       state.modelOverride = "auto";
       elements.modelOverride.value = "auto";
-      state.parsed = parseShowConfig(bytes);
+      const parsed = parseShowConfig(bytes);
+      const cleaned = cleanOrphanPadEffects(parsed);
+      state.parsed = cleaned.parsed;
+      state.originalParsed = state.parsed;
       state.slotPadIds = null;
       state.selectedPadId = null;
       state.md5Digest = md5Bytes(bytes);
       state.md5Status = "Computed locally";
-      elements.uploadNote.textContent = `Loaded ${file.name} (${bytes.length.toLocaleString()} bytes). Tree root selected at byte ${state.parsed.firstNodeOffset.toLocaleString()}, SOUNDPADS at byte ${state.parsed.soundPadsNode.start.toLocaleString()}, ${state.parsed.structure.rootCount} root nodes walked.`;
+      const cleanupText = cleaned.removedCount
+        ? ` Removed ${cleaned.removedCount.toLocaleString()} orphan PADEFFECTS entr${cleaned.removedCount === 1 ? "y" : "ies"} before editing.`
+        : "";
+      elements.uploadNote.textContent = `Loaded ${file.name} (${bytes.length.toLocaleString()} bytes). Tree root selected at byte ${state.parsed.firstNodeOffset.toLocaleString()}, SOUNDPADS at byte ${state.parsed.soundPadsNode.start.toLocaleString()}, ${state.parsed.structure.rootCount} root nodes walked.${cleanupText}`;
       rebuildLayout(true);
+      if (state.parsed.pads.length) {
+        state.selectedPadId = state.parsed.pads[0].id;
+        renderLayout();
+        renderInspector();
+      }
 
       const md5File = elements.md5Input.files?.[0];
       if (md5File) {
@@ -367,6 +564,7 @@
       }
     } catch (error) {
       state.parsed = null;
+      state.originalParsed = null;
       state.slotPadIds = null;
       state.layout = null;
       state.selectedPadId = null;
@@ -393,6 +591,11 @@
   });
 
   elements.resetLayout.addEventListener("click", () => {
+    if (state.originalParsed) {
+      state.parsed = state.originalParsed;
+      state.slotPadIds = null;
+      state.selectedPadId = null;
+    }
     rebuildLayout(true);
   });
 
@@ -410,6 +613,34 @@
     }
 
     createDownload(`${state.currentFileBaseName}.md5`, state.exportedMd5);
+  });
+
+  // Global key listeners to track Alt key state and handle pad deletion
+  document.addEventListener('keydown', (event) => {
+    if (event.key === 'Alt') {
+      state.altKeyPressed = true;
+    }
+    const target = event.target;
+    const isTyping =
+      target instanceof HTMLInputElement ||
+      target instanceof HTMLTextAreaElement ||
+      target instanceof HTMLSelectElement ||
+      target?.isContentEditable;
+
+    if (
+      !isTyping &&
+      (event.key === 'Delete' || event.key === 'Backspace') &&
+      state.selectedPadId !== null
+    ) {
+      event.preventDefault();
+      deletePad(state.selectedPadId);
+    }
+  });
+
+  document.addEventListener('keyup', (event) => {
+    if (event.key === 'Alt') {
+      state.altKeyPressed = false;
+    }
   });
 
   updateMetrics();

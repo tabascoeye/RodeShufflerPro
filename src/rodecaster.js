@@ -6,6 +6,7 @@
     1: "Sound",
     2: "Effect",
     3: "Mixer",
+    4: "Trigger",
     6: "Action"
   };
 
@@ -13,9 +14,11 @@
     1: './res/sound.svg',
     2: './res/fx.svg',
     3: './res/mixer.svg',
+    4: './res/quickdial.svg',
     6: './res/midi.svg'
   };
 
+  const EFFECT_PAD_TYPE = 2;
   const PAD_COLOURS = {
     [-1]: { label: "Neutral", swatch: "#58626b" },
     0: { label: "Red", swatch: "#d84b49" },
@@ -95,7 +98,10 @@
     if (first === 0x01 && second !== undefined) {
       return {
         count: second,
+        countOffset: name.next + 1,
         cursor: name.next + 2,
+        headerLength: 2,
+        headerStart: name.next,
         kind: "leaf",
         name: name.value
       };
@@ -104,7 +110,10 @@
     if (first === 0x00 && second === 0x01 && third !== undefined) {
       return {
         count: third,
+        countOffset: name.next + 2,
         cursor: name.next + 3,
+        headerLength: 3,
+        headerStart: name.next,
         kind: "container",
         name: name.value
       };
@@ -113,7 +122,10 @@
     if (first === 0x00 && second === 0x00) {
       return {
         count: 0,
+        countOffset: null,
         cursor: name.next + 2,
+        headerLength: 2,
+        headerStart: name.next,
         kind: "container",
         name: name.value
       };
@@ -361,7 +373,10 @@
 
     return {
       count: header.count,
+      countOffset: header.countOffset,
       end: cursor,
+      headerLength: header.headerLength,
+      headerStart: header.headerStart,
       items,
       kind: header.kind,
       name: header.name,
@@ -516,6 +531,171 @@
     return roots.find((node) => node.name === "SOUNDPADS") || null;
   }
 
+  function findPadEffectsNode(roots) {
+    return roots.find((node) => node.name === "PADEFFECTS") || null;
+  }
+
+  function isEffectPad(pad) {
+    return pad?.rawType === EFFECT_PAD_TYPE || pad?.type === EFFECT_PAD_TYPE;
+  }
+
+  function buildPadEffect(node, id) {
+    const fieldsByName = new Map(node.items.map((field) => [field.name, field]));
+    const effectsIdxField = fieldsByName.get("effectsIdx") || null;
+
+    return {
+      effectsIdx: intField(effectsIdxField),
+      effectsIdxField,
+      fields: node.items,
+      fieldsByName,
+      id,
+      node
+    };
+  }
+
+  function collectPadEffects(padEffectsNode) {
+    if (!padEffectsNode || padEffectsNode.kind !== "container") {
+      return [];
+    }
+
+    return padEffectsNode.items
+      .filter((node) => node.name === "EFFECTS_PARAMETERS" && node.kind === "leaf")
+      .map((node, index) => buildPadEffect(node, index));
+  }
+
+  function linkPadEffectsToPads(pads, padEffects) {
+    const linkedEffectIds = new Set();
+
+    pads.forEach((pad) => {
+      pad.padEffect = null;
+      pad.padEffectId = null;
+
+      if (!isEffectPad(pad)) {
+        return;
+      }
+
+      const candidates = padEffects.filter(
+        (effect) =>
+          effect.effectsIdx === pad.absoluteIndex && !linkedEffectIds.has(effect.id)
+      );
+
+      const padEffect = candidates[candidates.length - 1] || null;
+      if (!padEffect) {
+        return;
+      }
+
+      pad.padEffect = padEffect;
+      pad.padEffectId = padEffect.id;
+      linkedEffectIds.add(padEffect.id);
+    });
+  }
+
+  function findLinkedPadEffect(parsed, pad) {
+    if (!parsed || !pad || !isEffectPad(pad)) {
+      return null;
+    }
+
+    if (pad.padEffectId !== null && pad.padEffectId !== undefined) {
+      const linked = parsed.padEffects.find((effect) => effect.id === pad.padEffectId);
+      if (linked) {
+        return linked;
+      }
+    }
+
+    return findPadEffectByIndex(parsed, pad.absoluteIndex);
+  }
+
+  function findPadEffectByIndex(parsed, effectsIdx) {
+    if (!parsed || !Array.isArray(parsed.padEffects)) {
+      return null;
+    }
+
+    const candidates = parsed.padEffects.filter(
+      (effect) => effect.effectsIdx === effectsIdx
+    );
+    return candidates[candidates.length - 1] || null;
+  }
+
+  function canRemovePadEffect(parsed, padEffect) {
+    return Boolean(parsed && padEffect);
+  }
+
+  function analyzePadEffectsStructure(padEffectsNode, bytes) {
+    if (!padEffectsNode) return null;
+
+    const analysis = {
+      name: padEffectsNode.name,
+      kind: padEffectsNode.kind,
+      count: padEffectsNode.count,
+      children: []
+    };
+
+    // PADEFFECTS is a container, so its items are child nodes
+    if (padEffectsNode.kind === "container") {
+      padEffectsNode.items.forEach((item, index) => {
+        const childInfo = {
+          index,
+          name: item.name,
+          kind: item.kind,
+          count: item.count,
+          offset: item.start,
+          rawBytes: bytes.slice(item.start, item.start + 20).map(b => b.toString(16).padStart(2, '0')).join(' '),
+          fields: []
+        };
+
+        // If this child is a leaf, its items are fields
+        if (item.kind === "leaf") {
+          item.items.forEach(field => {
+            // Analyze the raw bytes before the field name to understand prefix structure
+            const prefixBytes = [];
+            let tempOffset = field.start;
+            while (tempOffset < bytes.length && bytes[tempOffset] !== 0x00) {
+              const byte = bytes[tempOffset];
+              if (byte >= 65 && byte <= 90) { // Uppercase letter - start of name
+                break;
+              }
+              prefixBytes.push(byte);
+              tempOffset++;
+            }
+
+            childInfo.fields.push({
+              name: field.name,
+              offset: field.start,
+              prefixBytes: prefixBytes.map(b => b.toString(16).padStart(2, '0')).join(' '),
+              prefixDecimal: prefixBytes.map(b => b),
+              rawBytes: bytes.slice(field.start, field.start + 20).map(b => b.toString(16).padStart(2, '0')).join(' '),
+              type: field.lengthType,
+              len: field.payloadLength,
+              value: field.decoded ? (field.decoded.numeric !== undefined ? field.decoded.numeric : field.decoded.bool !== undefined ? field.decoded.bool : field.decoded.pretty) : null
+            });
+          });
+        }
+
+        analysis.children.push(childInfo);
+      });
+    }
+
+    return analysis;
+  }
+
+  function findInputSourceNode(roots) {
+    for (const node of roots) {
+      if (node.name === "INPUTSOURCE" && node.kind === "leaf") {
+        return node;
+      }
+      if (node.kind === "container") {
+        const found = node.items.find((child) => child.name === "INPUTSOURCE" && child.kind === "leaf");
+        if (found) return found;
+      }
+    }
+    return null;
+  }
+
+  function findInputIdField(inputSourceNode) {
+    if (!inputSourceNode || inputSourceNode.kind !== "leaf") return null;
+    return inputSourceNode.items.find((field) => field.name === "inputId");
+  }
+
   function walkNodes(nodes, visitor, depth = 0) {
     nodes.forEach((node) => {
       visitor(node, depth);
@@ -624,6 +804,8 @@
     const matchingControls = parsed.pads.filter(
       (pad) => pad.triggerControl === null || pad.triggerControl === pad.absoluteIndex
     ).length;
+    const effectPads = parsed.pads.filter((pad) => isEffectPad(pad));
+    const linkedEffectPads = effectPads.filter((pad) => pad.padEffect).length;
     const maxIndex = Math.max(-1, ...parsed.pads.map((pad) => pad.absoluteIndex));
     const fieldCountSummary = Array.from(
       countBy(parsed.pads, (pad) => pad.fields.length).entries()
@@ -660,6 +842,9 @@
         ? `Two-byte field lengths appear only on: ${wideFieldSummary}.`
         : "All decoded fields in this file use one-byte payload lengths.",
       `${matchingControls}/${parsed.pads.length} pads have padIdx and padTriggerControl set to the same absolute slot.`,
+      parsed.padEffectsNode
+        ? `PADEFFECTS declares ${parsed.padEffectsNode.count} EFFECTS_PARAMETERS objects; ${linkedEffectPads}/${effectPads.length} effect pads have a matching effectsIdx entry.`
+        : "No PADEFFECTS section was decoded.",
       `Highest slot index is ${maxIndex}, which fits the ${parsed.autoModel.totalSlots}-slot ${parsed.autoModel.label} layout.`,
       typeSummary ? `Pad types found: ${typeSummary}.` : "No pad types were decoded."
     ];
@@ -696,6 +881,7 @@
     }
 
     const soundPadsNode = findSoundPadsNode(parseResult.roots);
+    const padEffectsNode = findPadEffectsNode(parseResult.roots);
 
     if (!soundPadsNode) {
       throw new Error("This file does not contain a SOUNDPADS section.");
@@ -704,6 +890,8 @@
     const pads = soundPadsNode.items
       .filter((node) => node.name === "PAD" && node.kind === "leaf")
       .map((node, index) => buildPad(node, index));
+    const padEffects = collectPadEffects(padEffectsNode);
+    linkPadEffectsToPads(pads, padEffects);
 
     const strings = collectAsciiStrings(bytes);
     const autoModel = inferModel(strings, pads);
@@ -719,6 +907,8 @@
         trailingBytes: parseResult.trailingBytes,
         trailingNonZeroBytes: parseResult.trailingNonZeroBytes
       },
+      padEffects,
+      padEffectsNode,
       pads,
       roots: parseResult.roots,
       soundPadsNode,
@@ -850,8 +1040,17 @@
   }
 
   function exportRemappedBinary(parsed, slotPadIds) {
+    parsed = cleanOrphanPadEffects(parsed).parsed;
     const output = parsed.bytes.slice();
     const slotToPadId = Array.isArray(slotPadIds) ? slotPadIds : [];
+    const patchedPadEffectIds = new Set();
+    const linkedPadEffectIds = new Set(
+      parsed.pads
+        .filter((pad) => isEffectPad(pad) && pad.padEffectId !== null && pad.padEffectId !== undefined)
+        .map((pad) => pad.padEffectId)
+    );
+    const padEffectOperations = [];
+    let padEffectCountDelta = 0;
 
     slotToPadId.forEach((padId, absoluteIndex) => {
       if (padId === null || padId === undefined) {
@@ -865,10 +1064,50 @@
 
       patchIntField(output, pad.fieldsByName.get("padIdx"), absoluteIndex);
       patchIntField(output, pad.fieldsByName.get("padTriggerControl"), absoluteIndex);
+
+      if (!isEffectPad(pad)) {
+        return;
+      }
+
+      const padEffect = findLinkedPadEffect(parsed, pad);
+      if (!padEffect || patchedPadEffectIds.has(padEffect.id)) {
+        return;
+      }
+
+      const targetEffect = findPadEffectByIndex(parsed, absoluteIndex);
+      const targetEffectIsAvailable =
+        targetEffect &&
+        targetEffect.id !== padEffect.id &&
+        !linkedPadEffectIds.has(targetEffect.id);
+
+      if (targetEffectIsAvailable) {
+        const effectBytes = copyNodeWithPatchedInts(parsed.bytes, padEffect.node, [
+          {
+            field: padEffect.effectsIdxField,
+            value: absoluteIndex
+          }
+        ]);
+
+        padEffectOperations.push(replaceNodeOperation(targetEffect.node, effectBytes));
+        padEffectOperations.push(removeNodeOperation(parsed.bytes, padEffect.node));
+        padEffectCountDelta -= 1;
+
+        patchedPadEffectIds.add(padEffect.id);
+        return;
+      }
+
+      patchIntField(output, padEffect.effectsIdxField, absoluteIndex);
+      patchedPadEffectIds.add(padEffect.id);
     });
 
+    if (padEffectCountDelta !== 0 && parsed.padEffectsNode) {
+      padEffectOperations.push(
+        nodeCountOperation(parsed.padEffectsNode, parsed.padEffectsNode.count + padEffectCountDelta)
+      );
+    }
+
     return {
-      bytes: output
+      bytes: applyBinaryOperations(output, padEffectOperations)
     };
   }
 
@@ -883,12 +1122,293 @@
     return Uint8Array.from([...textEncoder.encode(value), 0x00]);
   }
 
+  function rangeOperation(start, end, bytes) {
+    return { bytes, end, start };
+  }
+
+  function applyBinaryOperations(bytes, operations) {
+    return operations
+      .filter(Boolean)
+      .slice()
+      .sort((left, right) => {
+        if (left.start !== right.start) {
+          return right.start - left.start;
+        }
+
+        return right.end - left.end;
+      })
+      .reduce((current, operation) => {
+        const next = new Uint8Array(
+          current.length - (operation.end - operation.start) + operation.bytes.length
+        );
+        next.set(current.slice(0, operation.start), 0);
+        next.set(operation.bytes, operation.start);
+        next.set(current.slice(operation.end), operation.start + operation.bytes.length);
+        return next;
+      }, bytes);
+  }
+
+  function nodeCountOperation(node, nextCount) {
+    if (!node) {
+      throw new Error("Cannot update count on a missing node.");
+    }
+
+    if (!Number.isInteger(nextCount) || nextCount < 0 || nextCount > 255) {
+      throw new Error(`Unsupported node count ${nextCount}.`);
+    }
+
+    if (node.kind === "container") {
+      const headerBytes =
+        nextCount === 0
+          ? Uint8Array.from([0x00, 0x00])
+          : Uint8Array.from([0x00, 0x01, nextCount]);
+
+      return rangeOperation(
+        node.headerStart,
+        node.headerStart + node.headerLength,
+        headerBytes
+      );
+    }
+
+    if (node.countOffset === null || node.countOffset === undefined) {
+      throw new Error(`Cannot update count for ${node.name}.`);
+    }
+
+    return rangeOperation(node.countOffset, node.countOffset + 1, Uint8Array.from([nextCount]));
+  }
+
+  function withTrailingSeparator(bytes) {
+    const output = new Uint8Array(bytes.length + 1);
+    output.set(bytes, 0);
+    output[bytes.length] = 0x00;
+    return output;
+  }
+
+  function removeNodeOperation(bytes, node) {
+    const end = bytes[node.end] === 0x00 ? node.end + 1 : node.end;
+    return rangeOperation(node.start, end, new Uint8Array(0));
+  }
+
+  function appendChildNodeOperation(bytes, container, nodeBytes) {
+    const hasBoundarySeparator = bytes[container.end] === 0x00;
+    const insertOffset =
+      container.count > 0 && hasBoundarySeparator ? container.end + 1 : container.end;
+
+    return rangeOperation(insertOffset, insertOffset, withTrailingSeparator(nodeBytes));
+  }
+
+  function replaceNodeOperation(node, bytes) {
+    return rangeOperation(node.start, node.end, bytes);
+  }
+
+  function patchIntFieldInNodeCopy(nodeBytes, sourceNode, field, value) {
+    if (!field || field.decoded.kind !== "int32" || field.payloadLength !== 5) {
+      return;
+    }
+
+    const relativePayloadStart = field.payloadStart - sourceNode.start;
+    new DataView(
+      nodeBytes.buffer,
+      nodeBytes.byteOffset + relativePayloadStart,
+      field.payloadLength
+    ).setInt32(1, value, true);
+  }
+
+  function copyNodeWithPatchedInts(bytes, sourceNode, patches) {
+    const nodeBytes = bytes.slice(sourceNode.start, sourceNode.end);
+    patches.forEach(({ field, value }) => {
+      patchIntFieldInNodeCopy(nodeBytes, sourceNode, field, value);
+    });
+    return nodeBytes;
+  }
+
+  function linkedPadEffectIds(parsed) {
+    const ids = new Set();
+
+    if (!parsed || !Array.isArray(parsed.pads)) {
+      return ids;
+    }
+
+    parsed.pads.forEach((pad) => {
+      if (
+        isEffectPad(pad) &&
+        pad.padEffectId !== null &&
+        pad.padEffectId !== undefined
+      ) {
+        ids.add(pad.padEffectId);
+      }
+    });
+
+    return ids;
+  }
+
+  function cleanOrphanPadEffects(parsed) {
+    if (!parsed?.padEffectsNode || !Array.isArray(parsed.padEffects)) {
+      return {
+        bytes: parsed?.bytes,
+        parsed,
+        removedCount: 0
+      };
+    }
+
+    const keepEffectIds = linkedPadEffectIds(parsed);
+    const orphanEffects = parsed.padEffects.filter(
+      (effect) => !keepEffectIds.has(effect.id)
+    );
+
+    if (!orphanEffects.length) {
+      return {
+        bytes: parsed.bytes,
+        parsed,
+        removedCount: 0
+      };
+    }
+
+    const operations = orphanEffects.map((effect) =>
+      removeNodeOperation(parsed.bytes, effect.node)
+    );
+    operations.push(nodeCountOperation(parsed.padEffectsNode, keepEffectIds.size));
+
+    const bytes = applyBinaryOperations(parsed.bytes, operations);
+    return {
+      bytes,
+      parsed: parseShowConfig(bytes),
+      removedCount: orphanEffects.length
+    };
+  }
+
+  function removePadBinary(parsed, padId) {
+    parsed = cleanOrphanPadEffects(parsed).parsed;
+    const pad = parsed.pads.find((p) => p.id === padId);
+    if (!pad || !pad.node) {
+      throw new Error(`Pad ${padId} not found`);
+    }
+
+    const soundPadsNode = parsed.soundPadsNode;
+    if (!soundPadsNode || soundPadsNode.kind !== "container") {
+      throw new Error("SOUNDPADS container not found");
+    }
+
+    const operations = [
+      removeNodeOperation(parsed.bytes, pad.node),
+      nodeCountOperation(soundPadsNode, soundPadsNode.count - 1)
+    ];
+
+    if (isEffectPad(pad) && parsed.padEffectsNode) {
+      const padEffect = findLinkedPadEffect(parsed, pad);
+      if (padEffect && canRemovePadEffect(parsed, padEffect)) {
+        operations.push(removeNodeOperation(parsed.bytes, padEffect.node));
+        operations.push(nodeCountOperation(parsed.padEffectsNode, parsed.padEffectsNode.count - 1));
+      }
+    }
+
+    const newBytes = applyBinaryOperations(parsed.bytes, operations);
+    return parseShowConfig(newBytes);
+  }
+
+  function duplicatePadBinary(parsed, sourcePadId, targetAbsoluteIndex, overwriteTargetId) {
+    parsed = cleanOrphanPadEffects(parsed).parsed;
+    const sourcePad = parsed.pads.find((p) => p.id === sourcePadId);
+    if (!sourcePad || !sourcePad.node) {
+      throw new Error(`Source pad ${sourcePadId} not found`);
+    }
+
+    const soundPadsNode = parsed.soundPadsNode;
+    if (!soundPadsNode || soundPadsNode.kind !== "container") {
+      throw new Error("SOUNDPADS container not found");
+    }
+
+    if (!Number.isInteger(targetAbsoluteIndex) || targetAbsoluteIndex < 0) {
+      throw new Error(`Invalid target slot ${targetAbsoluteIndex}.`);
+    }
+
+    const operations = [];
+    const sourceBytes = copyNodeWithPatchedInts(parsed.bytes, sourcePad.node, [
+      {
+        field: sourcePad.fieldsByName.get("padIdx"),
+        value: targetAbsoluteIndex
+      },
+      {
+        field: sourcePad.fieldsByName.get("padTriggerControl"),
+        value: targetAbsoluteIndex
+      }
+    ]);
+
+    let targetPad = null;
+    if (overwriteTargetId !== undefined && overwriteTargetId !== null) {
+      targetPad = parsed.pads.find((p) => p.id === overwriteTargetId);
+      if (!targetPad || !targetPad.node) {
+        throw new Error(`Target pad ${overwriteTargetId} not found for overwrite`);
+      }
+
+      operations.push(replaceNodeOperation(targetPad.node, sourceBytes));
+    } else {
+      operations.push(appendChildNodeOperation(parsed.bytes, soundPadsNode, sourceBytes));
+      operations.push(nodeCountOperation(soundPadsNode, soundPadsNode.count + 1));
+    }
+
+    if (parsed.padEffectsNode) {
+      if (isEffectPad(sourcePad)) {
+        const sourceEffect = findLinkedPadEffect(parsed, sourcePad);
+        if (sourceEffect) {
+          const effectBytes = copyNodeWithPatchedInts(parsed.bytes, sourceEffect.node, [
+            {
+              field: sourceEffect.effectsIdxField,
+              value: targetAbsoluteIndex
+            }
+          ]);
+          const targetEffect = findPadEffectByIndex(parsed, targetAbsoluteIndex);
+
+          if (targetEffect) {
+            operations.push(replaceNodeOperation(targetEffect.node, effectBytes));
+          } else {
+            operations.push(
+              appendChildNodeOperation(parsed.bytes, parsed.padEffectsNode, effectBytes)
+            );
+            operations.push(
+              nodeCountOperation(parsed.padEffectsNode, parsed.padEffectsNode.count + 1)
+            );
+          }
+        }
+      } else if (targetPad && isEffectPad(targetPad)) {
+        const targetEffect = findLinkedPadEffect(parsed, targetPad);
+        if (targetEffect && canRemovePadEffect(parsed, targetEffect)) {
+          operations.push(removeNodeOperation(parsed.bytes, targetEffect.node));
+          operations.push(
+            nodeCountOperation(parsed.padEffectsNode, parsed.padEffectsNode.count - 1)
+          );
+        }
+      }
+    }
+
+    const newBytes = applyBinaryOperations(parsed.bytes, operations);
+    const newParsed = parseShowConfig(newBytes);
+    const candidates = newParsed.pads.filter(
+      (pad) =>
+        pad.absoluteIndex === targetAbsoluteIndex &&
+        pad.triggerControl === targetAbsoluteIndex &&
+        pad.rawType === sourcePad.rawType &&
+        pad.name === sourcePad.name
+    );
+    const newPad =
+      candidates[candidates.length - 1] ||
+      newParsed.pads.find((pad) => pad.absoluteIndex === targetAbsoluteIndex) ||
+      newParsed.pads[newParsed.pads.length - 1];
+
+    return { parsed: newParsed, newPadId: newPad?.id ?? null };
+  }
+
   globalObject.RodeShufflerParser = {
+    analyzePadEffectsStructure,
     buildLayout,
+    cleanOrphanPadEffects,
+    duplicatePadBinary,
     encodeCString,
     exportRemappedBinary,
+    findPadEffectsNode,
     formatPadFields,
     parseShowConfig,
+    removePadBinary,
     resolveModel,
     padTypeIcon
   };
