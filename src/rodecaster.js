@@ -32,7 +32,7 @@
     8: { label: "Purple", swatch: "#7b5ad6" },
     9: { label: "Pink", swatch: "#cf5bb3" },
     10: { label: "Rose", swatch: "#e86b8f" },
-    11: { label: "White", swatch: "#d8dce2" }
+    11: { label: "Hot Pink", swatch: "#ff2d9a" }
   };
 
   function isPrintableByte(byte) {
@@ -521,7 +521,7 @@
     return {
       confidence: maxIndex >= 42 ? "slot-range" : "fallback",
       key: "duo",
-      label: maxIndex >= 42 ? "Likely RØDECaster Duo" : "RØDECaster Duo (fallback)",
+      label: "RØDECaster Duo",
       padsPerBank: 6,
       totalSlots: 48
     };
@@ -1122,6 +1122,41 @@
     return Uint8Array.from([...textEncoder.encode(value), 0x00]);
   }
 
+  function concatBytes(parts) {
+    const totalLength = parts.reduce((total, part) => total + part.length, 0);
+    const output = new Uint8Array(totalLength);
+    let offset = 0;
+
+    parts.forEach((part) => {
+      output.set(part, offset);
+      offset += part.length;
+    });
+
+    return output;
+  }
+
+  function encodeField(name, payload) {
+    const nameBytes = encodeCString(name);
+
+    if (payload.length <= 255) {
+      return concatBytes([nameBytes, Uint8Array.from([0x01, payload.length]), payload]);
+    }
+
+    if (payload.length > 65535) {
+      throw new Error(`Field ${name} is too large.`);
+    }
+
+    return concatBytes([
+      nameBytes,
+      Uint8Array.from([0x02, payload.length & 0xff, payload.length >> 8]),
+      payload
+    ]);
+  }
+
+  function encodeStringField(name, value) {
+    return encodeField(name, concatBytes([Uint8Array.from([0x05]), encodeCString(value)]));
+  }
+
   function rangeOperation(start, end, bytes) {
     return { bytes, end, start };
   }
@@ -1222,6 +1257,10 @@
     return nodeBytes;
   }
 
+  function replaceFieldOperation(field, bytes) {
+    return rangeOperation(field.start, field.end, bytes);
+  }
+
   function linkedPadEffectIds(parsed) {
     const ids = new Set();
 
@@ -1275,6 +1314,55 @@
       parsed: parseShowConfig(bytes),
       removedCount: orphanEffects.length
     };
+  }
+
+  function renamePadBinary(parsed, padId, nextName) {
+    parsed = cleanOrphanPadEffects(parsed).parsed;
+    const pad = parsed.pads.find((p) => p.id === padId);
+    if (!pad || !pad.node) {
+      throw new Error(`Pad ${padId} not found`);
+    }
+
+    const field = pad.fieldsByName.get("padName");
+    if (!field || field.decoded.kind !== "string") {
+      throw new Error(`Pad ${padId} does not have an editable padName field.`);
+    }
+
+    const name = String(nextName ?? "").trim();
+    if (!name) {
+      throw new Error("Pad name cannot be empty.");
+    }
+
+    const bytes = applyBinaryOperations(parsed.bytes, [
+      replaceFieldOperation(field, encodeStringField("padName", name))
+    ]);
+    return parseShowConfig(bytes);
+  }
+
+  function updatePadEffectInputBinary(parsed, padId, nextInput) {
+    parsed = cleanOrphanPadEffects(parsed).parsed;
+    const pad = parsed.pads.find((p) => p.id === padId);
+    if (!pad || !pad.node) {
+      throw new Error(`Pad ${padId} not found`);
+    }
+
+    if (!isEffectPad(pad)) {
+      throw new Error("Only FX pads have an editable input source.");
+    }
+
+    const field = pad.fieldsByName.get("padEffectInput");
+    if (!field || field.decoded.kind !== "int32" || field.payloadLength !== 5) {
+      throw new Error(`Pad ${padId} does not have an editable padEffectInput field.`);
+    }
+
+    const input = Number(nextInput);
+    if (!Number.isInteger(input)) {
+      throw new Error(`Invalid FX input ${nextInput}.`);
+    }
+
+    const output = parsed.bytes.slice();
+    patchIntField(output, field, input);
+    return parseShowConfig(output);
   }
 
   function removePadBinary(parsed, padId) {
@@ -1408,8 +1496,10 @@
     findPadEffectsNode,
     formatPadFields,
     parseShowConfig,
+    renamePadBinary,
     removePadBinary,
     resolveModel,
-    padTypeIcon
+    padTypeIcon,
+    updatePadEffectInputBinary
   };
 })(window);

@@ -1,14 +1,21 @@
 (function bootstrapBrowserApp() {
-  const { bytesToHex, md5Bytes } = window.RodeShufflerUtils || {};
-  const { buildLayout, cleanOrphanPadEffects, exportRemappedBinary, formatPadFields, parseShowConfig, padTypeIcon } =
+  const { md5Bytes } = window.RodeShufflerUtils || {};
+  const { buildLayout, cleanOrphanPadEffects, exportRemappedBinary, parseShowConfig, padTypeIcon, renamePadBinary, updatePadEffectInputBinary } =
     window.RodeShufflerParser || {};
 
-  if (!bytesToHex || !md5Bytes || !buildLayout || !cleanOrphanPadEffects || !exportRemappedBinary || !formatPadFields || !parseShowConfig) {
+  if (!md5Bytes || !buildLayout || !cleanOrphanPadEffects || !exportRemappedBinary || !parseShowConfig || !renamePadBinary || !updatePadEffectInputBinary) {
     throw new Error("Rode Shuffler dependencies did not load correctly.");
   }
 
+  const FX_INPUT_OPTIONS = [
+    { label: "Wired Mic 1", value: 0 },
+    { label: "Wired Mic 2", value: 1 },
+    { label: "Headset", value: 2 },
+    { label: "Wireless Mic 1", value: 19 },
+    { label: "Wireless Mic 2", value: 20 }
+  ];
+
   const state = {
-    changeSummary: "Current remap status will appear here after a file is loaded.",
     currentFileBaseName: "show-config",
     draggedPadId: null,
     exportedBin: null,
@@ -16,9 +23,6 @@
     isDuplicating: false,
     altKeyPressed: false,
     layout: null,
-    md5Digest: null,
-    md5Status: "Not checked",
-    modelOverride: "auto",
     originalParsed: null,
     parsed: null,
     selectedPadId: null,
@@ -29,16 +33,11 @@
     binInput: document.querySelector("#bin-input"),
     downloadBin: document.querySelector("#download-bin"),
     downloadMd5: document.querySelector("#download-md5"),
-    changeSummary: document.querySelector("#change-summary"),
+    fxSummary: document.querySelector("#fx-summary"),
     inspector: document.querySelector("#inspector"),
     layoutGrid: document.querySelector("#layout-grid"),
-    layoutSummary: document.querySelector("#layout-summary"),
-    md5Input: document.querySelector("#md5-input"),
-    md5Summary: document.querySelector("#md5-summary"),
-    modelOverride: document.querySelector("#model-override"),
     modelSummary: document.querySelector("#model-summary"),
     padsSummary: document.querySelector("#pads-summary"),
-    parserSummary: document.querySelector("#parser-summary"),
     resetLayout: document.querySelector("#reset-layout"),
     uploadNote: document.querySelector("#upload-note")
   };
@@ -56,25 +55,126 @@
   function makeKeyValue(label, value) {
     const row = document.createElement("div");
     row.className = "inspector-row";
-    row.innerHTML = `<span>${label}</span><strong>${value}</strong>`;
+    const labelElement = document.createElement("span");
+    labelElement.textContent = label;
+    const valueElement = document.createElement("strong");
+    valueElement.textContent = value;
+    row.append(labelElement, valueElement);
     return row;
   }
 
-  function updateMetrics() {
-    elements.changeSummary.textContent = state.changeSummary;
+  function makeNameEditor(pad) {
+    const row = document.createElement("label");
+    row.className = "inspector-row";
+    const labelElement = document.createElement("span");
+    labelElement.textContent = "Name";
+    const input = document.createElement("input");
+    input.type = "text";
+    input.value = pad.name;
+    input.autocomplete = "off";
 
-    if (!state.parsed || !state.layout) {
-      elements.modelSummary.textContent = "Waiting for file";
-      elements.parserSummary.textContent = "Idle";
-      elements.padsSummary.textContent = "No pads";
-      elements.md5Summary.textContent = state.md5Status;
+    input.addEventListener("input", () => {
+      pad.name = input.value;
+      renderLayout();
+    });
+
+    input.addEventListener("change", () => {
+      commitPadName(pad.id, input.value);
+    });
+
+    row.append(labelElement, input);
+    return row;
+  }
+
+  function makeFxInputEditor(pad) {
+    const row = document.createElement("label");
+    row.className = "inspector-row";
+    const labelElement = document.createElement("span");
+    labelElement.textContent = "FX Input";
+    const select = document.createElement("select");
+
+    FX_INPUT_OPTIONS.forEach((option) => {
+      const item = document.createElement("option");
+      item.value = `${option.value}`;
+      item.textContent = option.label;
+      select.append(item);
+    });
+
+    const hasKnownInput = FX_INPUT_OPTIONS.some((option) => option.value === pad.effectInput);
+    if (!hasKnownInput && pad.effectInput !== null && pad.effectInput !== undefined) {
+      const item = document.createElement("option");
+      item.value = `${pad.effectInput}`;
+      item.textContent = `Input ${pad.effectInput}`;
+      select.append(item);
+    }
+
+    select.value = `${pad.effectInput ?? ""}`;
+    select.addEventListener("change", () => {
+      commitPadEffectInput(pad.id, Number(select.value));
+    });
+
+    row.append(labelElement, select);
+    return row;
+  }
+
+  function commitPadName(padId, nextName) {
+    if (!state.parsed) {
       return;
     }
 
+    const current = state.parsed.pads.find((pad) => pad.id === padId);
+    const trimmedName = String(nextName || "").trim();
+    if (!current || !trimmedName || current.fieldsByName.get("padName")?.decoded.text === trimmedName) {
+      renderInspector();
+      return;
+    }
+
+    try {
+      state.parsed = renamePadBinary(state.parsed, padId, trimmedName);
+      state.selectedPadId = padId;
+      rebuildLayout(false);
+    } catch (error) {
+      elements.uploadNote.textContent = error instanceof Error ? error.message : String(error);
+      renderInspector();
+    }
+  }
+
+  function commitPadEffectInput(padId, nextInput) {
+    if (!state.parsed) {
+      return;
+    }
+
+    const current = state.parsed.pads.find((pad) => pad.id === padId);
+    if (!current || current.effectInput === nextInput) {
+      renderInspector();
+      return;
+    }
+
+    try {
+      state.parsed = updatePadEffectInputBinary(state.parsed, padId, nextInput);
+      state.selectedPadId = padId;
+      rebuildLayout(false);
+    } catch (error) {
+      elements.uploadNote.textContent = error instanceof Error ? error.message : String(error);
+      renderInspector();
+    }
+  }
+
+  function updateMetrics() {
+    if (!state.parsed || !state.layout) {
+      elements.modelSummary.textContent = "Waiting for file";
+      elements.padsSummary.textContent = "No pads";
+      elements.fxSummary.textContent = "No FX";
+      return;
+    }
+
+    const effectPads = state.parsed.pads.filter((pad) => pad.rawType === 2);
+    const linkedEffects = effectPads.filter((pad) => pad.padEffect).length;
     elements.modelSummary.textContent = state.layout.model.label;
-    elements.parserSummary.textContent = `${state.parsed.structure.rootCount} roots / ${state.parsed.pads.length} PADs`;
     elements.padsSummary.textContent = `${state.layout.usedSlots}/${state.layout.model.totalSlots} slots used`;
-    elements.md5Summary.textContent = state.md5Status;
+    elements.fxSummary.textContent = effectPads.length
+      ? `${linkedEffects}/${effectPads.length} linked`
+      : "No FX";
   }
 
 
@@ -82,7 +182,7 @@
     elements.inspector.innerHTML = "";
 
     if (!state.parsed || state.selectedPadId === null) {
-      elements.inspector.innerHTML = `<p class="subtle">Select a pad to inspect its parsed fields.</p>`;
+      elements.inspector.innerHTML = `<p class="subtle">Select a pad to inspect it.</p>`;
       return;
     }
 
@@ -95,42 +195,34 @@
     const important = document.createElement("div");
     important.className = "inspector-grid";
 
-    // Editable name field
-    const nameRow = document.createElement("div");
-    nameRow.className = "inspector-row";
-    const nameLabel = document.createElement("span");
-    nameLabel.textContent = "Name";
-    const nameInput = document.createElement("input");
-    nameInput.type = "text";
-    nameInput.value = pad.name;
-    nameInput.addEventListener("input", (event) => {
-      pad.name = event.target.value;
-      renderLayout(); // Update the pad display
-    });
-    nameInput.addEventListener("blur", () => {
-      // Could add save logic here if needed
-    });
-    nameRow.append(nameLabel, nameInput);
+    const currentSlot = state.slotPadIds?.indexOf(pad.id) ?? -1;
+    const slotLabel =
+      currentSlot >= 0
+        ? `#${currentSlot}`
+        : `#${pad.absoluteIndex}`;
 
-    // Type field (read-only)
-    const typeRow = document.createElement("div");
-    typeRow.className = "inspector-row";
-    const typeLabel = document.createElement("span");
-    typeLabel.textContent = "Type";
-    const typeValue = document.createElement("strong");
-    typeValue.textContent = `${pad.typeLabel} (padType ${pad.rawType})`;
-    typeRow.append(typeLabel, typeValue);
+    important.append(makeNameEditor(pad));
+    important.append(makeKeyValue("Type", pad.typeLabel));
+    important.append(makeKeyValue("Slot", slotLabel));
 
-    // File path field (read-only, if exists)
-    const fileRow = document.createElement("div");
-    fileRow.className = "inspector-row";
-    const fileLabel = document.createElement("span");
-    fileLabel.textContent = "File";
-    const fileValue = document.createElement("strong");
-    fileValue.textContent = pad.filePath || "No file";
-    fileRow.append(fileLabel, fileValue);
+    if (currentSlot !== pad.absoluteIndex) {
+      important.append(makeKeyValue("Stored padIdx", `#${pad.absoluteIndex}`));
+    }
 
-    important.append(nameRow, typeRow, fileRow);
+    important.append(makeKeyValue("Colour", `${pad.colour.label} (${pad.colourIndex})`));
+
+    if (pad.filePath) {
+      important.append(makeKeyValue("File", pad.filePath));
+    } else if (pad.rawType === 2) {
+      important.append(makeFxInputEditor(pad));
+      important.append(
+        makeKeyValue(
+          "FX Params",
+          pad.padEffect ? `effectsIdx ${pad.padEffect.effectsIdx}` : "Missing"
+        )
+      );
+    }
+
     elements.inspector.append(important);
   }
 
@@ -139,7 +231,6 @@
     state.exportedMd5 = null;
     elements.downloadBin.disabled = true;
     elements.downloadMd5.disabled = true;
-    state.changeSummary = "Current remap status will appear here after a file is loaded.";
 
     if (!state.parsed || !state.slotPadIds) {
       updateMetrics();
@@ -149,22 +240,6 @@
     const exported = exportRemappedBinary(state.parsed, state.slotPadIds);
     state.exportedBin = exported.bytes.slice();
     state.exportedMd5 = md5Bytes(exported.bytes);
-
-    const originalBytes = state.originalParsed ? state.originalParsed.bytes : state.parsed.bytes;
-    const maxLen = Math.max(originalBytes.length, exported.bytes.length);
-    let diffCount = 0;
-    for (let index = 0; index < maxLen; index += 1) {
-      if (originalBytes[index] !== exported.bytes[index]) {
-        diffCount += 1;
-      }
-    }
-
-    const originalMd5 = bytesToHex(md5Bytes(originalBytes));
-    const remappedMd5 = bytesToHex(state.exportedMd5);
-    state.changeSummary =
-      diffCount === 0
-        ? `Current remap is unchanged. Export MD5: ${remappedMd5}.`
-        : `Current remap changes ${diffCount} byte${diffCount === 1 ? "" : "s"}. Original MD5: ${originalMd5}. Remapped MD5: ${remappedMd5}.`;
     elements.downloadBin.disabled = false;
     elements.downloadMd5.disabled = false;
     updateMetrics();
@@ -180,7 +255,6 @@
     }
 
     const layout = buildLayout(state.parsed, {
-      modelOverride: state.modelOverride,
       slotPadIds: resetSlots ? null : state.slotPadIds
     });
 
@@ -392,17 +466,13 @@
       elements.layoutGrid.innerHTML = `
         <div class="empty-card">
           <h3>No show loaded</h3>
-          <p>Upload a <code>show-config.bin</code> to parse the full show tree and map its smart pads.</p>
+          <p>Upload a <code>show-config.bin</code> to map its smart pads.</p>
         </div>
       `;
-      elements.layoutSummary.textContent =
-        "The pad banks will appear here after the file is parsed.";
       return;
     }
 
     elements.layoutGrid.className = "bank-grid";
-    const geometry = state.layout.model.key === "duo" ? "2x3" : "2x4";
-    elements.layoutSummary.textContent = `${geometry} bank layout, absolute placement taken from padIdx, drag/drop swaps pad positions.`;
 
     state.layout.banks.forEach((bank) => {
       const bankCard = document.createElement("section");
@@ -511,23 +581,6 @@
     });
   }
 
-  async function verifyMd5File(file) {
-    if (!state.md5Digest) {
-      return;
-    }
-
-    const bytes = new Uint8Array(await file.arrayBuffer());
-    const text = new TextDecoder().decode(bytes).trim().toLowerCase();
-    const digestHex = bytesToHex(state.md5Digest);
-
-    const matches =
-      (bytes.length === 16 && bytes.every((byte, index) => byte === state.md5Digest[index])) ||
-      text === digestHex;
-
-    state.md5Status = matches ? "Checksum matches" : "Checksum mismatch";
-    updateMetrics();
-  }
-
   elements.binInput.addEventListener("change", async (event) => {
     const file = event.target.files?.[0];
     if (!file) {
@@ -537,30 +590,21 @@
     try {
       const bytes = new Uint8Array(await file.arrayBuffer());
       state.currentFileBaseName = file.name.replace(/\.[^.]+$/, "") || "show-config";
-      state.modelOverride = "auto";
-      elements.modelOverride.value = "auto";
       const parsed = parseShowConfig(bytes);
       const cleaned = cleanOrphanPadEffects(parsed);
       state.parsed = cleaned.parsed;
       state.originalParsed = state.parsed;
       state.slotPadIds = null;
       state.selectedPadId = null;
-      state.md5Digest = md5Bytes(bytes);
-      state.md5Status = "Computed locally";
       const cleanupText = cleaned.removedCount
         ? ` Removed ${cleaned.removedCount.toLocaleString()} orphan PADEFFECTS entr${cleaned.removedCount === 1 ? "y" : "ies"} before editing.`
         : "";
-      elements.uploadNote.textContent = `Loaded ${file.name} (${bytes.length.toLocaleString()} bytes). Tree root selected at byte ${state.parsed.firstNodeOffset.toLocaleString()}, SOUNDPADS at byte ${state.parsed.soundPadsNode.start.toLocaleString()}, ${state.parsed.structure.rootCount} root nodes walked.${cleanupText}`;
+      elements.uploadNote.textContent = `Loaded ${file.name}. ${state.parsed.pads.length.toLocaleString()} pad${state.parsed.pads.length === 1 ? "" : "s"} ready.${cleanupText}`;
       rebuildLayout(true);
       if (state.parsed.pads.length) {
         state.selectedPadId = state.parsed.pads[0].id;
         renderLayout();
         renderInspector();
-      }
-
-      const md5File = elements.md5Input.files?.[0];
-      if (md5File) {
-        await verifyMd5File(md5File);
       }
     } catch (error) {
       state.parsed = null;
@@ -568,26 +612,11 @@
       state.slotPadIds = null;
       state.layout = null;
       state.selectedPadId = null;
-      state.md5Status = "Parse failed";
       elements.uploadNote.textContent = error instanceof Error ? error.message : String(error);
       updateMetrics();
       renderLayout();
       renderInspector();
     }
-  });
-
-  elements.md5Input.addEventListener("change", async (event) => {
-    const file = event.target.files?.[0];
-    if (!file) {
-      return;
-    }
-
-    await verifyMd5File(file);
-  });
-
-  elements.modelOverride.addEventListener("change", (event) => {
-    state.modelOverride = event.target.value;
-    rebuildLayout(false);
   });
 
   elements.resetLayout.addEventListener("click", () => {
