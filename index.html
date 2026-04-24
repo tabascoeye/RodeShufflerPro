@@ -13,33 +13,31 @@
     <div class="shell">
       <header class="panel topbar">
         <div>
-          <p class="eyebrow">RØDECaster Smart Pad Parser</p>
+          <p class="eyebrow">Offline show editor</p>
           <h1>Rode Shuffler Pro</h1>
           <p class="lede">
-            Offline browser tool for RØDECaster Duo / Pro II show files. It
-            walks the full binary tree, finds the <code>SOUNDPADS</code>
-            container inside it, parses each <code>PAD</code> object, lays the
-            pads out by their real slot index, and lets you rearrange and export
-            the updated show plus matching <code>.md5</code>.
+            Load a <code>show-config.bin</code>, rearrange Smart Pads, then
+            export a device-ready show with a matching <code>.md5</code>.
           </p>
+          <div class="hints">
+            <span>Drag pads to move or swap.</span>
+            <span>Hold Alt/Option before dropping to duplicate.</span>
+            <span>Select a pad and press Backspace/Delete to remove it.</span>
+          </div>
         </div>
 
         <div class="summary-strip">
           <div class="metric">
-            <span>Model</span>
+            <span>Device</span>
             <strong id="model-summary">Waiting for file</strong>
-          </div>
-          <div class="metric">
-            <span>Parser</span>
-            <strong id="parser-summary">Idle</strong>
           </div>
           <div class="metric">
             <span>Slots</span>
             <strong id="pads-summary">No pads</strong>
           </div>
           <div class="metric">
-            <span>MD5</span>
-            <strong id="md5-summary">Not checked</strong>
+            <span>FX Links</span>
+            <strong id="fx-summary">No FX</strong>
           </div>
         </div>
       </header>
@@ -51,33 +49,13 @@
             <input id="bin-input" type="file" accept=".bin,application/octet-stream" />
           </label>
 
-          <label class="field">
-            <span>Optional MD5</span>
-            <input id="md5-input" type="file" accept=".md5,.txt,application/octet-stream" />
-          </label>
-
-          <label class="field">
-            <span>Model Override</span>
-            <select id="model-override">
-              <option value="auto">Auto detect</option>
-              <option value="duo">RØDECaster Duo</option>
-              <option value="proii">RØDECaster Pro II</option>
-            </select>
-          </label>
-        </div>
-
-        <div class="toolbar-row actions">
           <button id="reset-layout" class="secondary" disabled>Reset Layout</button>
           <button id="download-bin" disabled>Download BIN</button>
           <button id="download-md5" class="secondary" disabled>Download MD5</button>
         </div>
 
         <p class="subtle" id="upload-note">
-          Open a <code>show-config.bin</code> to inspect its full parsed tree and
-          smart pad layout. Everything runs locally in your browser.
-        </p>
-        <p class="subtle" id="change-summary">
-          Current remap status will appear here after a file is loaded.
+          Open a <code>show-config.bin</code> to begin. Everything runs locally.
         </p>
       </section>
 
@@ -86,9 +64,6 @@
           <div class="section-head">
             <div>
               <h2>Smart Pad Banks</h2>
-              <p class="subtle" id="layout-summary">
-                The parsed smart pad banks will appear here after upload.
-              </p>
             </div>
           </div>
 
@@ -103,7 +78,7 @@
         <section class="panel">
           <h2>Selected Pad</h2>
           <div id="inspector" class="inspector">
-            <p class="subtle">Select a pad to inspect its parsed fields.</p>
+            <p class="subtle">Select a pad to inspect it.</p>
           </div>
         </section>
       </main>
